@@ -1,0 +1,96 @@
+name: Coode Derle
+on:
+  push:
+    paths:
+      - 'Coode_Kaynak.zip'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  prep:
+    runs-on: ubuntu-latest
+    outputs:
+      ver: ${{ steps.v.outputs.ver }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          unzip -o Coode_Kaynak.zip -d src
+          echo "ver=$(tr -d '\r\n ' < src/VERSION)" >> "$GITHUB_OUTPUT"
+
+  apk:
+    needs: prep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: unzip -o Coode_Kaynak.zip -d src
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: APK derle
+        working-directory: src/android
+        run: gradle assembleRelease --no-daemon --stacktrace
+      - run: cp src/android/app/build/outputs/apk/release/app-release.apk "Coode-${{ needs.prep.outputs.ver }}.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: Coode-*.apk
+
+  windows:
+    needs: prep
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - shell: pwsh
+        run: Expand-Archive -Path Coode_Kaynak.zip -DestinationPath src -Force
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Coode.exe derle
+        working-directory: src/desktop
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pyinstaller --noconfirm --clean coode.spec
+      - name: Setup.exe olustur
+        working-directory: src/desktop
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc "/DAppVersion=${{ needs.prep.outputs.ver }}" installer.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: setup
+          path: src/desktop/dist/Coode_Setup_*.exe
+
+  release:
+    needs: [prep, apk, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Sabit dosya adlari (indirme linkleri hic degismesin)
+        run: |
+          mkdir rel
+          cp out/Coode_Setup_*.exe rel/Coode_Setup.exe
+          cp out/Coode-*.apk rel/Coode.apk
+          ls -la rel
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.prep.outputs.ver }}
+          name: Coode ${{ needs.prep.outputs.ver }}
+          make_latest: true
+          body: |
+            PC: Coode_Setup dosyasini indir ve calistir (eskisinin uzerine kurulur, sohbetler silinmez).
+            Telefon: Coode apk dosyasini indir ve kur.
+          files: rel/*
